@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: legal_hub_postgres
+    environment:
+      POSTGRES_DB: legal_hub
+      POSTGRES_USER: legal_user
+      POSTGRES_PASSWORD: legal_password_2026
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U legal_user -d legal_hub"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: legal_hub_backend
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://legal_user:legal_password_2026@db:5432/legal_hub
+      - SECRET_KEY=legal-intel-hub-super-secret-key-change-in-prod-2026
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=llama3
+      - EMBEDDING_MODEL_NAME=all-MiniLM-L6-v2
+    volumes:
+      - backend_uploads:/app/data/uploads
+      - backend_vectors:/app/data/vectors
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: legal_hub_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: legal_hub_frontend
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+
+volumes:
+  postgres_data:
+  backend_uploads:
+  backend_vectors:
+  ollama_models:
