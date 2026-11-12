@@ -5,6 +5,7 @@ import requests
 from typing import List, Dict, Any, Optional, Tuple
 from app.core.config import settings
 from app.services.vector_store import vector_store
+import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,9 @@ Rules:
 2. If the provided document excerpts do not contain sufficient information to answer the question, explicitly state: "The uploaded documents do not provide sufficient information to answer this question."
 3. DO NOT fabricate, extrapolate, or invent legal clauses, terms, or citations.
 4. Keep answers professional, concise, objective, and clearly structured with bullet points where appropriate."""
+
+if settings.GEMINI_API_KEY:
+    genai.configure(api_key=settings.GEMINI_API_KEY)
 
 class RAGService:
     @staticmethod
@@ -77,29 +81,20 @@ class RAGService:
         return citations
 
     @staticmethod
-    def _query_ollama(prompt: str, system_prompt: str) -> Optional[str]:
-        """Send prompt to local Ollama instance."""
+    def _query_gemini(prompt: str, system_prompt: str) -> Optional[str]:
+        """Send prompt to Gemini hosted API."""
         try:
-            url = f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/generate"
-            payload = {
-                "model": settings.OLLAMA_MODEL,
-                "prompt": prompt,
-                "system": system_prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.1,  # Low temperature for legal precision
-                    "top_p": 0.9
-                }
-            }
-            resp = requests.post(url, json=payload, timeout=60)
-            if resp.status_code == 200:
-                data = resp.json()
-                return data.get("response", "").strip()
-            else:
-                logger.warning(f"Ollama returned status {resp.status_code}: {resp.text}")
+            if not settings.GEMINI_API_KEY:
+                logger.warning("GEMINI_API_KEY is missing; Gemini generation unavailable.")
                 return None
-        except requests.exceptions.RequestException as e:
-            logger.info(f"Ollama connection unavailable at {settings.OLLAMA_BASE_URL}: {e}")
+
+            model = genai.GenerativeModel(settings.GEMINI_MODEL)
+            response = model.generate_content([
+                {"role": "user", "parts": [{"text": system_prompt + "\n\n" + prompt}]}
+            ])
+            return response.text.strip() if getattr(response, "text", None) else None
+        except Exception as e:
+            logger.info(f"Gemini generation unavailable: {e}")
             return None
 
     @staticmethod
@@ -108,9 +103,7 @@ class RAGService:
         context_chunks: List[Dict[str, Any]]
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """
-        Extractive RAG fallback when Ollama is offline or uninstalled.
-        Extracts the most relevant sentences directly from retrieved chunks
-        and cites them with exact [Document, Page X] markers.
+        Extractive RAG fallback when Gemini is unavailable.
         """
         if not context_chunks:
             return (
@@ -167,7 +160,7 @@ class RAGService:
             answer = (
                 f"Based on {cite_tag}:\n\n"
                 f"\"{c.get('content')[:400]}...\"\n\n"
-                f"> *Note: Local Ollama model is currently offline. Extracted directly from retrieved contract clauses.*"
+                "> *Note: Gemini generation is currently unavailable. Extracted directly from retrieved contract clauses.*"
             )
             return answer, [{
                 "document_id": c.get("document_id", ""),
@@ -179,8 +172,7 @@ class RAGService:
         answer = (
             f"Here are the relevant provisions identified in your contract regarding **{query}**:\n\n"
             + "\n\n".join(extracted_findings)
-            + "\n\n> *Note: Synthesized from indexed document text. Connect Ollama at "
-            f"`{settings.OLLAMA_BASE_URL}` (model: `{settings.OLLAMA_MODEL}`) for full generative reasoning.*"
+            + "\n\n> *Note: Synthesized from indexed document text. Gemini generation is used when available.*"
         )
         return answer, citations
 
@@ -193,11 +185,7 @@ class RAGService:
         top_k: int = 5
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """
-        Executes end-to-end RAG:
-        1. Retrieves top-k chunks from vector store.
-        2. Formats prompt with strict citation constraints.
-        3. Calls Ollama or executes resilient grounded extractor.
-        4. Returns answer and structured citations.
+        Executes end-to-end RAG using hosted Gemini models.
         """
         chunks = vector_store.search(
             query=query,
@@ -235,14 +223,11 @@ class RAGService:
             f"Answer:"
         )
 
-        # Attempt Ollama generation
-        ollama_response = cls._query_ollama(prompt, LEGAL_SYSTEM_PROMPT)
+        gemini_response = cls._query_gemini(prompt, LEGAL_SYSTEM_PROMPT)
+        if gemini_response:
+            citations = cls.extract_citations(gemini_response, chunks)
+            return gemini_response, citations
 
-        if ollama_response:
-            citations = cls.extract_citations(ollama_response, chunks)
-            return ollama_response, citations
-
-        # Resilient fallback
         return cls._generate_grounded_fallback(query, chunks)
 
 rag_service = RAGService()

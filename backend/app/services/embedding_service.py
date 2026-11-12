@@ -1,20 +1,20 @@
 import os
-from pathlib import Path
-import numpy as np
 import logging
 from typing import List, Union
+import numpy as np
+import google.generativeai as genai
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Point HuggingFace cache to our storage directory
-cache_folder = str(settings.VECTOR_STORE_DIR / "hf_cache")
-os.environ["HF_HOME"] = cache_folder
+# Configure Gemini only if an API key is present; otherwise fail gracefully.
+if settings.GEMINI_API_KEY:
+    genai.configure(api_key=settings.GEMINI_API_KEY)
 
 class EmbeddingService:
     _instance = None
     _model = None
-    _dimension = 384
+    _dimension = 768
 
     def __new__(cls):
         if cls._instance is None:
@@ -24,23 +24,20 @@ class EmbeddingService:
 
     def _init_model(self):
         try:
-            from sentence_transformers import SentenceTransformer
-            logger.info(f"Loading embedding model: {settings.EMBEDDING_MODEL_NAME}")
-            try:
-                self._model = SentenceTransformer(
-                    settings.EMBEDDING_MODEL_NAME,
-                    local_files_only=True
-                )
-            except Exception:
-                self._model = SentenceTransformer(
-                    settings.EMBEDDING_MODEL_NAME
-                )
-            self._dimension = self._model.get_sentence_embedding_dimension()
-            logger.info(f"Embedding model loaded successfully. Dimension: {self._dimension}")
+            if not settings.GEMINI_API_KEY:
+                logger.warning("GEMINI_API_KEY is missing. Gemini embeddings will be unavailable.")
+                self._model = None
+                self._dimension = 768
+                return
+
+            genai.configure(api_key=settings.GEMINI_API_KEY)
+            self._model = settings.GEMINI_EMBEDDING_MODEL
+            logger.info(f"Gemini embedding model configured: {self._model}")
+            self._dimension = 768
         except Exception as e:
-            logger.warning(f"Could not load SentenceTransformer ({e}). Falling back to dense semantic vectorizer.")
+            logger.warning(f"Could not initialize Gemini embedding client ({e}). Falling back to deterministic vectorizer.")
             self._model = None
-            self._dimension = 384
+            self._dimension = 768
 
     @property
     def dimension(self) -> int:
@@ -54,19 +51,24 @@ class EmbeddingService:
         if not texts:
             return np.empty((0, self._dimension), dtype=np.float32)
 
-        if self._model is not None:
+        if self._model is not None and settings.GEMINI_API_KEY:
             try:
-                embeddings = self._model.encode(
-                    texts,
-                    convert_to_numpy=True,
-                    normalize_embeddings=True,
-                    show_progress_bar=False
-                )
-                return embeddings.astype(np.float32)
-            except Exception as e:
-                logger.error(f"Error during SentenceTransformer encode: {e}")
+                vectors = []
+                for text in texts:
+                    result = genai.embed_content(
+                        model=self._model,
+                        content=text,
+                        task_type="retrieval_document"
+                    )
+                    embedding = result["embedding"] if isinstance(result, dict) and "embedding" in result else result
+                    vectors.append(np.asarray(embedding, dtype=np.float32))
 
-        # Deterministic semantic hash projection fallback (normalized 384-d vector)
+                arr = np.vstack(vectors)
+                return arr.astype(np.float32)
+            except Exception as e:
+                logger.error(f"Error during Gemini encode: {e}")
+
+        # Deterministic semantic hash projection fallback (normalized 768-d vector)
         vectors = []
         for text in texts:
             words = text.lower().split()

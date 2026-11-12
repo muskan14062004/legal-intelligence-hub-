@@ -27,10 +27,15 @@ class Settings(BaseSettings):
     UPLOAD_DIR: Path = BACKEND_DIR / "data" / "uploads"
     VECTOR_STORE_DIR: Path = BACKEND_DIR / "data" / "vectors"
 
-    # AI & Embedding configs
+    # AI & embedding configuration
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    GEMINI_EMBEDDING_MODEL: str = os.getenv("GEMINI_EMBEDDING_MODEL", "models/text-embedding-004")
+
+    # Backward-compatible local-model settings retained for compatibility but not used in hosted mode.
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama3")
-    EMBEDDING_MODEL_NAME: str = os.getenv("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
+    EMBEDDING_MODEL_NAME: str = os.getenv("EMBEDDING_MODEL_NAME", "models/text-embedding-004")
 
     # Upload limits
     MAX_UPLOAD_SIZE_BYTES: int = 50 * 1024 * 1024  # 50MB
